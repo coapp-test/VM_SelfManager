@@ -1,0 +1,11 @@
+This project is intended to facilitate the self-management of VMs in a Hyper-V system.
+
+Specifically, when functioning properly, this should allow anyone operating a VM on the host system to perform all of the following operations directly from inside the VM *without having direct access to the VM host computer*:
+
+- Save a new snapshot (with optional name).
+- Restore to a specific shapshot (latest or named).
+- List snapshots of the current VM.
+- Delete a specific snapshot for this VM (By name ONLY).
+- Write to a named log file on the host (if enabled by the host).
+- Read the contents of a log file on the host (if enabled by the host).
+- Start another existing VM on the host (if enabled on the host).
