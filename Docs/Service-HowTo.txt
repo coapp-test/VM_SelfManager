@@ -1,0 +1,20 @@
+How To...
+
+Install the service:
+	After the executable is compiled, copy the executable to a convenient 
+	(permanent) location, then run the following command as Administrator:
+		sc create VM_SelfManager binPath= C:\<Full_Path>\VM_SelfManager.exe
+
+	The service may be started and stopped by the following commands:
+		net start VM_SelfManager
+			AND
+		net stop VM_SelfManager
+
+Assign a log path:
+	Add a string value named "LogPath" at the approprate registry key below.
+	The value for this string should be the full path to the desired log 
+	location, with no trailing backslash. (eg. "C:\VM\Log")
+
+	x86:	HKEY_LOCAL_MACHINE\SOFTWARE\Hyper-V\VM Self Manager
+	x64:	HKEY_LOCAL_MACHINE\SOFTWARE\Wow6432Node\Hyper-V\VM Self Manager
+

@@ -1,0 +1,74 @@
+Explaination of client-side operation:
+	These commands assume that the VM has been provisioned with a host-side
+	named pipe attached to COM2 of the VM.  All self-management commands are
+	issued by sending data over this virtual serial port.  There is no reason
+	why these commands should not function from any client OS which can locate
+	and send data over the COM2 serial port.
+	
+	Each command is formed by a single-byte ASCII command code and a second
+	ASCII command byte which signals the end of the command request.  Some
+	commands allow or expect that text will be provided between the declaration
+	of the command and the end of the command.
+	
+	Under the assumption that the client OS is some form of windows or DOS, the
+	commands may be issued easily from the command prompt in the following
+	manner:
+	
+		C:\>  echo ^N^E > com2
+	
+	The '^N' and '^E' characters are produced in the command prompt by the
+	keystrokes 'Ctrl-N' and 'Ctrl-E' respectively.
+	
+	When a command can accept text within the command, the format would be:
+	
+		C:\>  echo ^NArbitrary Text^E > com2
+	
+	There is at least one command available which attempts to send data from
+	the host to the VM via the serial port.  I have found no reliable way to
+	read that data from a basic command prompt.  I have, however, been able to
+	request and retrieve that data by use of Powershell on the client.  At this
+	time, there are no plans to build an alternative return path for
+	communication.
+	
+	
+Commands:
+
+	  Command			Byte	Keystroke	ASCII
+	New Snapshot		0x0E	Ctrl-N		Shift Out (SO)
+	Open Snapshot		0x0F	Ctrl-O		Shift In (SI)
+	Delete Snapshot		0x04	Ctrl-D		End of Transmission (EOT)
+	Write to log		0x17	Ctrl-W		End Transmit Block (ETB)
+	Read log			0x12	Ctrl-R		Device Control 2 (DC2)
+	Boot other VM		0x02	Ctrl-B		Start Text (STX)
+	
+	End Command			0x05	Ctrl-E		Enquiry (ENQ)
+	
+Notes on commands:
+	All snapshot commands will accept an optional snapshot name.  If no name is
+	provided, the most recent snapshot will be assumed.
+
+	Delete Snapshot Tree - You can delete a complete snapshot tree by declaring
+						"Delete Snapshot" twice as the start of the command.
+						Be aware that if no snapshot name is supplied, then the
+						following two commands are equivalent:
+							"^D^E"		"^D^D^E"
+	
+	Boot other VM - This command requires a VM name be supplied.  If the named
+					VM exists, then the host service will attempt to start it.
+					If the VM does not exist or is already running, no action
+					will be taken.
+	
+	Write to log -	While this does not *require* text to be supplied, it will
+					only record text supplied between the '^W' and the '^E'.
+					That being said, a multi-line log message may be 
+					accomplished by issuing this command, but waiting to close
+					it.  Example below:
+						echo ^WThis is the first line. > com2
+						echo Second line. > com2
+						echo Last line^E > com2
+	
+	Read log -	All data from the log is writen to the virtual serial port.
+				The data is terminated with and additional ASCII 0x1A appended
+				to signal the end of the stream.
+
+
