@@ -33,42 +33,44 @@ Explaination of client-side operation:
 	
 Commands:
 
-	  Command			Byte	Keystroke	ASCII
+	  Command		Byte	Keystroke	ASCII
 	New Snapshot		0x0E	Ctrl-N		Shift Out (SO)
 	Open Snapshot		0x0F	Ctrl-O		Shift In (SI)
 	Delete Snapshot		0x04	Ctrl-D		End of Transmission (EOT)
 	Write to log		0x17	Ctrl-W		End Transmit Block (ETB)
-	Read log			0x12	Ctrl-R		Device Control 2 (DC2)
+	Read log		0x12	Ctrl-R		Device Control 2 (DC2)
 	Boot other VM		0x02	Ctrl-B		Start Text (STX)
 	
-	End Command			0x05	Ctrl-E		Enquiry (ENQ)
+	End Command		0x05	Ctrl-E		Enquiry (ENQ)
 	
 Notes on commands:
 	All snapshot commands will accept an optional snapshot name.  If no name is
 	provided, the most recent snapshot will be assumed.
 
 	Delete Snapshot Tree - You can delete a complete snapshot tree by declaring
-						"Delete Snapshot" twice as the start of the command.
-						Be aware that if no snapshot name is supplied, then the
-						following two commands are equivalent:
-							"^D^E"		"^D^D^E"
+				"Delete Snapshot" twice as the start of the command.
+				Be aware that if no snapshot name is supplied, then the
+				following two commands are equivalent:
+					"^D^E"		"^D^D^E"
 	
 	Boot other VM - This command requires a VM name be supplied.  If the named
-					VM exists, then the host service will attempt to start it.
-					If the VM does not exist or is already running, no action
-					will be taken.
+			VM exists, then the host service will attempt to start it.
+			If the VM does not exist or is already running, no action
+			will be taken.
 	
 	Write to log -	While this does not *require* text to be supplied, it will
-					only record text supplied between the '^W' and the '^E'.
-					That being said, a multi-line log message may be 
-					accomplished by issuing this command, but waiting to close
-					it.  Example below:
+			only record text supplied between the '^W' and the '^E'.
+			That being said, a multi-line log message may be 
+			accomplished by issuing this command, but waiting to close
+			it.  Example below:
 						echo ^WThis is the first line. > com2
 						echo Second line. > com2
 						echo Last line^E > com2
 	
 	Read log -	All data from the log is writen to the virtual serial port.
-				The data is terminated with and additional ASCII 0x1A appended
-				to signal the end of the stream.
+			The data is terminated with and additional ASCII 0x1A appended
+			to signal the end of the stream.
+			An example (in powershell) on issuing this command and reading
+			the data from it is provided in "Client_ReadLog.ps1".
 
 

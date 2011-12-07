@@ -696,8 +696,10 @@ namespace VM_SelfManager
                 Dictionary<string, Listener> tempConn = new Dictionary<string, Listener>();
                 foreach (ManagementObject VM in Utility.GetActiveVMs()) //grab all active VMs
                 {
-                    foreach (ManagementObject SP in VM.GetRelated("MSVM_SerialPort")) // grab all serial ports on each VM
-                        if (SP["ElementName"].ToString().Equals("COM 2", StringComparison.CurrentCultureIgnoreCase)) // only care about COM2 for each VM
+                    foreach (ManagementObject SP in VM.GetRelated("MSVM_SerialPort"))
+                        // grab all serial ports on each VM
+                        if (SP["ElementName"].ToString().Equals("COM 2", StringComparison.CurrentCultureIgnoreCase))
+                            // only care about COM2 for each VM
                         {
                             ManagementObjectCollection collection = SP.GetRelated("MSVM_ResourceAllocationSettingData");
                             if (collection.Count > 0)
@@ -710,7 +712,7 @@ namespace VM_SelfManager
                                 }
                                 string con;
                                 if (item != null)
-                                    con = ((string[])item["Connection"])[0];
+                                    con = ((string[]) item["Connection"])[0];
                                 else con = String.Empty;
 
                                 if (!(con.Equals(String.Empty))) // Is there a pipe connection listed for this port?
@@ -718,10 +720,10 @@ namespace VM_SelfManager
                                     if (tempConn.ContainsKey(con))
                                     {
                                         /* I don't expect this condition to happen unless someone was dumb
-                                            * This covers the case where someone has assigned the same pipe to two seperate VMs.
-                                            * If this occurs, only the first to be recorded will be processed.  All others will
-                                            *   be discarded.
-                                            */
+                                         * This covers the case where someone has assigned the same pipe to two seperate VMs.
+                                         * If this occurs, only the first to be recorded will be processed.  All others will
+                                         *   be discarded.
+                                         */
                                     }
                                     if (Connections.ContainsKey(con))
                                     {
@@ -732,21 +734,23 @@ namespace VM_SelfManager
                                     else
                                     {
                                         // Not already being tracked: start a listener and track it.
-                                        tempConn.Add(con, new Listener(VM["ElementName"].ToString(), con, new CancellationTokenSource(), WriteEvent));
+                                        tempConn.Add(con,
+                                                     new Listener(VM["ElementName"].ToString(), con,
+                                                                  new CancellationTokenSource(), WriteEvent));
                                     }
 
                                 }
                             }
                         }
                 }
-
                 foreach (var connection in Connections)
-                {
-                    //kill any connections that no longer have active VMs to talk to
-                    connection.Value.Dispose();
-                }
-                //replace the current active dictionary with the one we've been filling
-                Connections = tempConn;
+                    {
+                        //kill any connections that no longer have active VMs to talk to
+                        connection.Value.Dispose();
+                    }
+                    //replace the current active dictionary with the one we've been filling
+                    Connections = tempConn;
+                
             }
             catch (InvalidOperationException E)
             {
