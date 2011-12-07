@@ -102,7 +102,29 @@ namespace VM_SelfManager
                                  Starting = 32770;
             }
 
-            
+            /// <summary>
+            /// Common utility function to get a service object
+            /// </summary>
+            /// <param name="scope"></param>
+            /// <param name="serviceName"></param>
+            /// <returns></returns>
+            public static ManagementObject GetServiceObject(string serviceName)
+            {
+                ManagementScope scope = new ManagementScope(@"root\virtualization", null);
+                scope.Connect();
+                ManagementPath wmiPath = new ManagementPath(serviceName);
+                ManagementClass serviceClass = new ManagementClass(scope, wmiPath, null);
+                ManagementObjectCollection services = serviceClass.GetInstances();
+
+                ManagementObject serviceObject = null;
+
+                foreach (ManagementObject service in services)
+                {
+                    serviceObject = service;
+                }
+                return serviceObject;
+            }
+
             public static ManagementObject GetVM(string VMName)
             {
                 ObjectQuery query = new ObjectQuery("select * from MSVM_ComputerSystem where ElementName like '"+VMName+"'");
@@ -186,25 +208,37 @@ namespace VM_SelfManager
 
             public static bool WaitForJob(ManagementBaseObject outParams)
             {
-                bool JobSuccess = true;
-                string JobPath = (string)outParams["Job"];
-                ManagementObject Job = new ManagementObject(new ManagementScope(@"root\virtualization"), new ManagementPath(JobPath), null);
-                //Try to get storage job information
-                Job.Get();
-                while ((UInt16)Job["JobState"] == JobState.Starting
-                    || (UInt16)Job["JobState"] == JobState.Running)
+                try
                 {
-                    Console.WriteLine("In progress... {0}% completed.", Job["PercentComplete"]);
-                    System.Threading.Thread.Sleep(1000);
+                    bool JobSuccess = true;
+                    string JobPath = (string)outParams["Job"];
+                    if (JobPath == null)
+                    {
+                        // No path to the job object.  Assume that either it is done already or no job was produced.
+                        return JobSuccess;
+                    }
+                    ManagementObject Job = new ManagementObject(new ManagementScope(@"root\virtualization"), new ManagementPath(JobPath), null);
+                    //Try to get storage job information
                     Job.Get();
+                    while ((UInt16)Job["JobState"] == JobState.Starting
+                        || (UInt16)Job["JobState"] == JobState.Running)
+                    {
+                        Console.WriteLine("In progress... {0}% completed.", Job["PercentComplete"]);
+                        System.Threading.Thread.Sleep(1000);
+                        Job.Get();
+                    }
+                    //Figure out if job failed
+                    UInt16 jobState = (UInt16)Job["JobState"];
+                    if (jobState != JobState.Completed)
+                    {
+                        JobSuccess = false;
+                    }
+                    return JobSuccess;
                 }
-                //Figure out if job failed
-                UInt16 jobState = (UInt16)Job["JobState"];
-                if (jobState != JobState.Completed)
+                catch (Exception E)
                 {
-                    JobSuccess = false;
+                    return false;
                 }
-                return JobSuccess;
             }
 
             public static ManagementObjectCollection GetActiveVMs()
@@ -229,8 +263,22 @@ namespace VM_SelfManager
                 Writer = writer;
                 Task = new Task(() =>
                                     {
-                                        NamedPipeClientStream pipeStream = new NamedPipeClientStream(Pipe);
-                                        while (!Task.IsCanceled)
+                                        string trimmed = Pipe.Substring(2); // trim the leading '\\'
+                                        const string PipeID = @"\pipe\";
+                                        int index = trimmed.IndexOf(PipeID);
+                                        string pipeServer = trimmed.Substring(0, index);
+                                        string pipeName = trimmed.Substring(index + PipeID.Length);
+                                        NamedPipeClientStream pipeStream = new NamedPipeClientStream(pipeServer, pipeName);
+                                        try { 
+                                            pipeStream.Connect(3000); 
+                                        }
+                                        catch (Exception)
+                                        {
+                                            write("Failed to make connection to pipe: " + Pipe, EventLogEntryType.Error);
+                                            this.Dispose();
+                                            return;
+                                        }
+                                        while (!Task.IsCanceled && !TokenSource.IsCancellationRequested)
                                             Listen(pipeStream, TokenSource.Token);
                                         try{pipeStream.Close();}
                                         catch (Exception){} // I don't really care if closing the pipe failed, I just don't want to kill the program.
@@ -270,7 +318,7 @@ namespace VM_SelfManager
             protected void Listen(NamedPipeClientStream pipe, CancellationToken token)
             {
                 byte current = (byte) pipe.ReadByte();
-                while (current != -1 && !token.IsCancellationRequested)
+                while (current != 255 && !token.IsCancellationRequested)
                 {
                     //ProcessMessage(current, pipe, token);
                     if (token.IsCancellationRequested)
@@ -300,20 +348,21 @@ namespace VM_SelfManager
 
                     current = (byte) pipe.ReadByte();
                 }
-
+                if (current == 255)
+                    this.Dispose();
             }
 
             private static string ReadToEnd(NamedPipeClientStream pipe)
             {
-                List<byte> input = new List<byte>();
-                byte c = (byte)pipe.ReadByte();
+                List<char> input = new List<char>();
+                char c = (char)pipe.ReadByte();
                 while (c != ProcessingKeys.EndMessage)
                 {
                     input.Add(c);
-                    c = (byte)pipe.ReadByte();
+                    c = (char)pipe.ReadByte();
                 }
                 if (input.Count > 0)
-                    return new string(input.Cast<char>().ToArray());
+                    return new string(input.ToArray());
                 return null;
             }
 
@@ -354,14 +403,20 @@ namespace VM_SelfManager
                 {
                     //Get name for snapshot (if any)
                     string name = ReadToEnd(pipe);
-                    ManagementClass VSMS = new ManagementClass(new ManagementScope(@"root\virtualization", null).Path.Path, "MSVM_VirtualSystemManagementService", null);
+                    ManagementObject VSMS = Utility.GetServiceObject("MSVM_VirtualSystemManagementService");
+                        //new ManagementClass(new ManagementScope(@"root\virtualization", null).Path.Path, "MSVM_VirtualSystemManagementService", null);
                     ManagementBaseObject SnapshotInput = VSMS.GetMethodParameters("CreateVirtualSystemSnapshot");
                     ManagementObject VM = Utility.GetVM(VMName);
-                    SnapshotInput["SourceSystem"] = VM;
-                    ManagementObject returned = new ManagementObject();
-                    SnapshotInput["SnapshotSettingData"] = returned;
-                    if (!Utility.WaitForJob(VSMS.InvokeMethod("CreateVirtualSystemSnapshot", SnapshotInput, null)))
+                    SnapshotInput["SourceSystem"] = VM.Path.Path;
+                    //ManagementObject returned = new ManagementObject();
+                    //SnapshotInput["SnapshotSettingData"] = returned;
+                    ManagementBaseObject WorkJob = VSMS.InvokeMethod("CreateVirtualSystemSnapshot", SnapshotInput, null);
+                    bool success = Utility.WaitForJob(WorkJob);
+                    if (!success)
                         throw new Exception();
+                    // This is a kludge because I cannot get 'CreateVirtualSystenSnapshot' to return a non-null 
+                    //   SnapshotSettingData object for me, so I'm just grabbing the snapshot I just made for myself.
+                    ManagementObject returned = Utility.GetSnapshot(VMName);
                     string OldName = returned["ElementName"].ToString();
                     write("Snapshot created successfully:  " + VMName + "::" + OldName);
 
@@ -376,7 +431,9 @@ namespace VM_SelfManager
                             ManagementBaseObject RenameInput = VSMS.GetMethodParameters("ModifyVirtualSystem");
                             RenameInput["ComputerSystem"] = VM.Path.Path;
                             RenameInput["SystemSettingData"] = returned.GetText(TextFormat.CimDtd20);
-                            if (!Utility.WaitForJob(VSMS.InvokeMethod("ModifyVirtualSystem", RenameInput, null)))
+                            WorkJob = VSMS.InvokeMethod("ModifyVirtualSystem", RenameInput, null);
+                            success = Utility.WaitForJob(WorkJob);
+                            if (!success)
                                 throw new Exception();
                             write("Snapshot renamed successfully:  " + OldName + " ==> " + name);
                         }
@@ -386,7 +443,7 @@ namespace VM_SelfManager
                         }
                     }
                 }
-                catch (Exception)
+                catch (Exception E)
                 {
                     write("Snapshot creation failed on VM: " + VMName);
                 }
@@ -396,24 +453,46 @@ namespace VM_SelfManager
             {
                 //Get name for snapshot (if any)
                 string name = ReadToEnd(pipe);
-                ManagementClass VSMS = new ManagementClass(new ManagementScope(@"root\virtualization", null).Path.Path, "MSVM_VirtualSystemManagementService", null);
+                ManagementObject VSMS = Utility.GetServiceObject("MSVM_VirtualSystemManagementService");
+                //ManagementClass VSMS = new ManagementClass(new ManagementScope(@"root\virtualization", null).Path.Path, "MSVM_VirtualSystemManagementService", null);
                 ManagementObject Snapshot = Utility.GetSnapshot(VMName, name);
                 if (Snapshot == null)
                     return;
-                ManagementBaseObject input = VSMS.GetMethodParameters("ApplyVirtualSystemSnapshot");
-                input["ComputerSystem"] = Utility.GetVM(VMName).Path.Path;
+                // Using 'ApplyVirtualSystemSnapshotEx' instead of 'ApplyVirtualSystemSnapshot' because this one returns a Job object.
+                ManagementBaseObject input = VSMS.GetMethodParameters("ApplyVirtualSystemSnapshotEx");
+                ManagementObject VM = Utility.GetVM(VMName);
+                input["ComputerSystem"] = VM.Path.Path;
                 input["SnapshotSettingData"] = Snapshot.Path.Path;
-
-                if (Utility.WaitForJob(VSMS.InvokeMethod("ApplyVirtualSystemSnapshot", input, null)))
+                // Having now set up all parameters, we need to stop the VM before we can apply the snapshot.
+                ManagementBaseObject stopInput = VM.GetMethodParameters("RequestStateChange");
+                ManagementBaseObject startInput = VM.GetMethodParameters("RequestStateChange");
+                stopInput["RequestedState"] = Utility.VMState.Stopped;
+                startInput["RequestedState"] = Utility.VMState.Running;
+                if (!Utility.WaitForJob(VM.InvokeMethod("RequestStateChange", stopInput, null)))
+                {
+                    write("Apply Snapshot failed.  Reason: Unable to stop VM '" + VMName + "'.", EventLogEntryType.Error);
+                    return;
+                }
+                ManagementBaseObject output = VSMS.InvokeMethod("ApplyVirtualSystemSnapshotEx", input, null);
+                bool success = Utility.WaitForJob(output);
+                if (success)
                     write("Applied snapshot to VM:  " + (name ?? "current") + " ==> " + VMName);
                 else
+                {
                     write("Failed to apply snapshot to VM:  " + (name ?? "current") + " ==> " + VMName, EventLogEntryType.Error);
+                    return;
+                }
+                if (!Utility.WaitForJob(VM.InvokeMethod("RequestStateChange", startInput, null)))
+                {
+                    write("Unable to start VM '" + VMName + "' after applying snapshot.", EventLogEntryType.Error);
+                }
+                
             }
 
             protected void ProcessDeleteSnapshot(NamedPipeClientStream pipe, CancellationToken token)
             {
                 // Are we deleting a whole tree?
-                byte c = (byte)pipe.ReadByte();
+                char c = (char)pipe.ReadByte();
                 if (c == ProcessingKeys.DeleteSnapshot)
                 {
                     ProcessDeleteTree(pipe, token);
@@ -421,8 +500,8 @@ namespace VM_SelfManager
                 }
                 //Get name for snapshot (if any)
                 string name = (c != ProcessingKeys.EndMessage ? String.Concat(c, ReadToEnd(pipe)) : null);
-
-                ManagementClass VSMS = new ManagementClass(new ManagementScope(@"root\virtualization", null).Path.Path, "MSVM_VirtualSystemManagementService", null);
+                ManagementObject VSMS = Utility.GetServiceObject("MSVM_VirtualSystemManagementService");
+                //ManagementClass VSMS = new ManagementClass(new ManagementScope(@"root\virtualization", null).Path.Path, "MSVM_VirtualSystemManagementService", null);
                 ManagementObject Snapshot = Utility.GetSnapshot(VMName, name);
                 if (Snapshot == null)
                     return;
@@ -439,7 +518,8 @@ namespace VM_SelfManager
             {
                 //Get name for snapshot (if any)
                 string name = ReadToEnd(pipe);
-                ManagementClass VSMS = new ManagementClass(new ManagementScope(@"root\virtualization", null).Path.Path, "MSVM_VirtualSystemManagementService", null);
+                ManagementObject VSMS = Utility.GetServiceObject("MSVM_VirtualSystemManagementService");
+                //ManagementClass VSMS = new ManagementClass(new ManagementScope(@"root\virtualization", null).Path.Path, "MSVM_VirtualSystemManagementService", null);
                 ManagementObject Snapshot = Utility.GetSnapshot(VMName, name);
                 if (Snapshot == null)
                     return;
@@ -480,12 +560,15 @@ namespace VM_SelfManager
                     //write it immediately so we can grab the next set if needed...
                     pipe.Write(data, 0, (i == reps ? (int) (Log.Length%int.MaxValue) : int.MaxValue));
                 }
+                pipe.WriteByte(0x1A); // writes an 'end of stream' character so the client knows that all has been sent.
             }
         }
 
         protected Dictionary<string, Listener> Connections;
         protected Timer UpdateTimer;
         protected static string LogPath;
+        protected bool LockObject;
+        protected const int TimerReset = 10 * 1000;
 
         public VM_SelfManager()
         {
@@ -502,6 +585,19 @@ namespace VM_SelfManager
 
         static void Main()
         {
+            /*
+            VM_SelfManager Manager = new VM_SelfManager();
+            Manager.OnStart(new string[0]);
+            ConsoleKeyInfo c = new ConsoleKeyInfo(' ',ConsoleKey.Spacebar,false,false,false);
+            while (!(c.Key.Equals(ConsoleKey.Escape)))
+            {
+                Console.Out.Write('.');
+                System.Threading.Thread.Sleep(1000);
+                if (Console.KeyAvailable)
+                    c = Console.ReadKey(true);
+            }
+            Manager.OnStop();
+             */
             ServiceBase.Run(new VM_SelfManager());
         }
 
@@ -519,8 +615,9 @@ namespace VM_SelfManager
         /// <param name="args"></param>
         protected override void OnStart(string[] args)
         {
+            LockObject = false;
             Connections = new Dictionary<string, Listener>();
-            UpdateTimer = new Timer(UpdateWorld, null, 0, (60 * 1000)); // 60 second timer
+            UpdateTimer = new Timer(UpdateWorld, null, 0, TimerReset); // 15 second timer
             LogPath = GetLogPath();
 
             base.OnStart(args);
@@ -558,7 +655,7 @@ namespace VM_SelfManager
         /// </summary>
         protected override void OnContinue()
         {
-            UpdateTimer.Change(0, (60*1000));
+            UpdateTimer.Change(0, TimerReset);
             base.OnContinue();
         }
 
@@ -585,47 +682,86 @@ namespace VM_SelfManager
 
         protected void UpdateWorld(object NotUsed)
         {
-            Dictionary<string, Listener> tempConn = new Dictionary<string, Listener>();
-            foreach (ManagementObject VM in Utility.GetActiveVMs()) //grab all active VMs
+            try
             {
-                foreach (ManagementObject SP in VM.GetRelated("MSVM_SerialPort")) // grab all serial ports on each VM
-                    if (SP["ElementName"].ToString().Equals("COM 2", StringComparison.CurrentCultureIgnoreCase)) // only care about COM2 for each VM
-                    {
-                        string con = SP.GetRelated("MSVM_ResourceAllocationSettingData").Cast<ManagementObject>().FirstOrDefault()["Coonection"].ToString();
-                        if (!(con.Equals(String.Empty))) // Is there a pipe connection listed for this port?
+                if (LockObject)
+                    return;
+                LockObject = true;
+                foreach (var item in Connections)
+                {
+                    if (item.Value.TokenSource.IsCancellationRequested)
+                        Connections.Remove(item.Key);
+                }
+
+                Dictionary<string, Listener> tempConn = new Dictionary<string, Listener>();
+                foreach (ManagementObject VM in Utility.GetActiveVMs()) //grab all active VMs
+                {
+                    foreach (ManagementObject SP in VM.GetRelated("MSVM_SerialPort")) // grab all serial ports on each VM
+                        if (SP["ElementName"].ToString().Equals("COM 2", StringComparison.CurrentCultureIgnoreCase)) // only care about COM2 for each VM
                         {
-                            if (tempConn.ContainsKey(con))
+                            ManagementObjectCollection collection = SP.GetRelated("MSVM_ResourceAllocationSettingData");
+                            if (collection.Count > 0)
                             {
-                                /* I don't expect this condition to happen unless someone was dumb
-                                 * This covers the case where someone has assigned the same pipe to two seperate VMs.
-                                 * If this occurs, only the first to be recorded will be processed.  All others will
-                                 *   be discarded.
-                                 */
-                            }
-                            if (Connections.ContainsKey(con))
-                            {
-                                // If already tracking, transfer info to new connection list and remove from old list.
-                                tempConn.Add(con, Connections[con]);
-                                Connections.Remove(con);
-                            }
-                            else
-                            {
-                                // Not already being tracked: start a listener and track it.
-                                tempConn.Add(con, new Listener(VM["ElementName"].ToString(), con, new CancellationTokenSource()));
-                            }
+                                ManagementObject item = null;
+                                foreach (ManagementObject o in collection)
+                                {
+                                    item = o;
+                                    break;
+                                }
+                                string con;
+                                if (item != null)
+                                    con = ((string[])item["Connection"])[0];
+                                else con = String.Empty;
 
+                                if (!(con.Equals(String.Empty))) // Is there a pipe connection listed for this port?
+                                {
+                                    if (tempConn.ContainsKey(con))
+                                    {
+                                        /* I don't expect this condition to happen unless someone was dumb
+                                            * This covers the case where someone has assigned the same pipe to two seperate VMs.
+                                            * If this occurs, only the first to be recorded will be processed.  All others will
+                                            *   be discarded.
+                                            */
+                                    }
+                                    if (Connections.ContainsKey(con))
+                                    {
+                                        // If already tracking, transfer info to new connection list and remove from old list.
+                                        tempConn.Add(con, Connections[con]);
+                                        Connections.Remove(con);
+                                    }
+                                    else
+                                    {
+                                        // Not already being tracked: start a listener and track it.
+                                        tempConn.Add(con, new Listener(VM["ElementName"].ToString(), con, new CancellationTokenSource(), WriteEvent));
+                                    }
+
+                                }
+                            }
                         }
-                    }
-            }
+                }
 
-            foreach (var connection in Connections)
+                foreach (var connection in Connections)
+                {
+                    //kill any connections that no longer have active VMs to talk to
+                    connection.Value.Dispose();
+                }
+                //replace the current active dictionary with the one we've been filling
+                Connections = tempConn;
+            }
+            catch (InvalidOperationException E)
             {
-                //kill any connections that no longer have active VMs to talk to
-                connection.Value.Dispose();
+                // I'm going to ignore this because it most likely means that a VM turned off during enumeration.
+                // But I do want the timer to re-run this updater to catch the changes.
+                UpdateTimer.Change(500, TimerReset);
             }
-            //replace the current active dictionary with the one we've been filling
-            Connections = tempConn;
+            catch (Exception E)
+            {
+                WriteEvent(E.ToString(), EventLogEntryType.Error, 0, 0);
+            }
+            finally
+            {
+                LockObject = false;
+            }
         }
-
     }
 }
